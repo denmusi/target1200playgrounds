@@ -5309,6 +5309,7 @@ function filterSelectedWords() {
                 { urls: 'stun:stun3.l.google.com:19302' },
                 { urls: 'stun:stun4.l.google.com:19302' },
                 { urls: 'stun:stun.services.mozilla.com' },
+                { urls: 'stun:global.stun.twilio.com:3478' },
                 {
                     urls: 'turn:openrelay.metered.ca:80',
                     username: 'openrelayproject',
@@ -5327,6 +5328,12 @@ function filterSelectedWords() {
             ]
         }
     };
+
+    // BroadcastChannel + PeerJS Hybrid Network Engine
+    const v21BC = ('BroadcastChannel' in window) ? new BroadcastChannel('vocab_casino_v21_p2p_channel') : null;
+    let activeBroadcastRoom = null;
+    let mySessionId = 'p_' + Math.random().toString(36).substr(2, 9);
+    let matchHasConnected = false;
     window.v21State = {
         mode: 'solo', // 'solo' | 'quick' | 'custom'
         role: 'host', // 'host' | 'guest'
@@ -5496,7 +5503,30 @@ function filterSelectedWords() {
         });
     }
 
-        function isWordInSameSynonymGroup(w1, w2) {
+            function getAcceptedWordsForWord(word) {
+        if (!word) return [];
+        if (Object.keys(v21SynonymMap).length === 0) {
+            buildV21SynonymDictionary();
+        }
+        
+        const acceptedSet = new Set();
+        if (word.en) acceptedSet.add(word.en.toLowerCase().trim());
+        
+        const candidates = v21SynonymMap[word.id] || [];
+        candidates.forEach(c => {
+            if (c.en) acceptedSet.add(c.en.toLowerCase().trim());
+        });
+        
+        allWords.forEach(w => {
+            if (w.ja === word.ja || isWordInSameSynonymGroup(word, w)) {
+                acceptedSet.add(w.en.toLowerCase().trim());
+            }
+        });
+        
+        return Array.from(acceptedSet);
+    }
+
+    function isWordInSameSynonymGroup(w1, w2) {
         if (!w1 || !w2) return false;
         if (w1.ja === w2.ja || w1.id === w2.id || w1.en.toLowerCase() === w2.en.toLowerCase()) return true;
 
@@ -5706,29 +5736,150 @@ function filterSelectedWords() {
         return 5;
     }
 
+    
+    function handleMatchSignal(data) {
+        if (!data || data.senderId === mySessionId) return;
+        
+        // Quick match search signal received
+        if (data.signalType === 'quick_search' && v21State.isSearchingMatch && v21State.mode === 'quick') {
+            const isHost = (mySessionId < data.senderId);
+            v21State.role = isHost ? 'host' : 'guest';
+            v21State.isSearchingMatch = false;
+            activeBroadcastRoom = 'quick_room_' + [mySessionId, data.senderId].sort().join('_');
+            
+            v21BC.postMessage({
+                v21_match_signal: true,
+                signalType: 'quick_accept',
+                roomId: activeBroadcastRoom,
+                hostId: isHost ? mySessionId : data.senderId,
+                guestId: isHost ? data.senderId : mySessionId,
+                senderId: mySessionId,
+                name: studentNickname || (v21State.role === 'host' ? "ホスト" : "ゲスト"),
+                rating: player.rating || 1500
+            });
+            
+            setupConnectionHandlers();
+            return;
+        }
+        
+        if (data.signalType === 'quick_accept' && v21State.isSearchingMatch && v21State.mode === 'quick') {
+            if (mySessionId === data.hostId || mySessionId === data.guestId) {
+                v21State.role = (mySessionId === data.hostId) ? 'host' : 'guest';
+                v21State.isSearchingMatch = false;
+                activeBroadcastRoom = data.roomId;
+                setupConnectionHandlers();
+                return;
+            }
+        }
+        
+        // Password Match host announce & join request signals
+        if (data.signalType === 'pw_join_request' && v21State.mode === 'custom' && v21State.role === 'host' && activeBroadcastRoom === data.roomId) {
+            v21BC.postMessage({
+                v21_match_signal: true,
+                signalType: 'pw_join_accept',
+                roomId: activeBroadcastRoom,
+                hostName: studentNickname || "ホスト",
+                hostRating: player.rating || 1500,
+                senderId: mySessionId
+            });
+            setupConnectionHandlers();
+            return;
+        }
+        
+        if (data.signalType === 'pw_join_accept' && v21State.mode === 'custom' && v21State.role === 'guest' && activeBroadcastRoom === data.roomId) {
+            setupConnectionHandlers();
+            return;
+        }
+    }
+
+    if (v21BC) {
+        v21BC.onmessage = (event) => {
+            const data = event.data;
+            if (!data) return;
+            
+            if (data.v21_game_packet && data.roomId === activeBroadcastRoom && data.senderId !== mySessionId && data.senderRole !== v21State.role) {
+                handleV21Packet(data.packet);
+                return;
+            }
+            
+            if (data.v21_match_signal) {
+                handleMatchSignal(data);
+            }
+        };
+    }
+
     function connectToPeer(targetId) {
         return new Promise((resolve) => {
-            const tempPeer = new Peer(peerConfig);
+            let hasResolved = false;
+            let tempPeer = null;
+            let timeoutId = null;
+            
+            const cleanupAndResolve = (result) => {
+                if (hasResolved) return;
+                hasResolved = true;
+                if (timeoutId) clearTimeout(timeoutId);
+                resolve(result);
+            };
+            
+            timeoutId = setTimeout(() => {
+                if (tempPeer) {
+                    try { tempPeer.destroy(); } catch(e) {}
+                }
+                cleanupAndResolve(null);
+            }, 3500);
+            
+            try {
+                tempPeer = new Peer(peerConfig);
+            } catch(e) {
+                cleanupAndResolve(null);
+                return;
+            }
+            
             tempPeer.on('open', () => {
-                const conn = tempPeer.connect(targetId, { timeout: 5000 });
-                conn.on('open', () => {
-                    resolve({ peer: tempPeer, conn });
-                });
-                conn.on('error', () => {
-                    tempPeer.destroy();
-                    resolve(null);
-                });
+                try {
+                    const conn = tempPeer.connect(targetId, { timeout: 3000 });
+                    
+                    const onOpen = () => {
+                        cleanupAndResolve({ peer: tempPeer, conn });
+                    };
+                    
+                    if (conn.open) {
+                        onOpen();
+                    } else {
+                        conn.on('open', onOpen);
+                    }
+                    
+                    conn.on('error', () => {
+                        try { tempPeer.destroy(); } catch(e) {}
+                        cleanupAndResolve(null);
+                    });
+                } catch(e) {
+                    try { tempPeer.destroy(); } catch(err) {}
+                    cleanupAndResolve(null);
+                }
             });
+            
             tempPeer.on('error', () => {
-                tempPeer.destroy();
-                resolve(null);
+                try { tempPeer.destroy(); } catch(e) {}
+                cleanupAndResolve(null);
             });
         });
     }
 
     function sendP2PPacket(packet) {
         if (v21Conn && v21Conn.open) {
-            v21Conn.send(packet);
+            try { v21Conn.send(packet); } catch(e) {}
+        }
+        if (v21BC && activeBroadcastRoom) {
+            try {
+                v21BC.postMessage({
+                    v21_game_packet: true,
+                    roomId: activeBroadcastRoom,
+                    senderRole: v21State.role,
+                    senderId: mySessionId,
+                    packet: packet
+                });
+            } catch(e) {}
         }
     }
 
@@ -5753,9 +5904,21 @@ function filterSelectedWords() {
     let matchmakingTimer = null;
     function startQuickMatchmaking() {
         cancelMatchmaking();
+        v21State.isSearchingMatch = true;
         
         // Show the matchmaking full-screen overlay modal
         document.getElementById("v21-match-overlay").style.display = "flex";
+        
+        // Broadcast quick search signal over local BroadcastChannel
+        if (v21BC) {
+            v21BC.postMessage({
+                v21_match_signal: true,
+                signalType: 'quick_search',
+                senderId: mySessionId,
+                name: studentNickname || "ゲスト",
+                rating: player.rating || 1500
+            });
+        }
         
         const tier = getTierIndex(player.rating || 1500);
         let phase = 0;
@@ -5821,10 +5984,14 @@ function filterSelectedWords() {
                 const _e_v21_match_status = document.getElementById('v21-match-status'); if (_e_v21_match_status) _e_v21_match_status.innerText = `対戦相手を待機中... (ルーム ${tier}-${slot})`;
                 
                 p.on('connection', (c) => {
-                    c.on('open', () => {
-                        v21Conn = c;
+                    v21Conn = c;
+                    if (c.open) {
                         setupConnectionHandlers();
-                    });
+                    } else {
+                        c.on('open', () => {
+                            setupConnectionHandlers();
+                        });
+                    }
                 });
             });
             
@@ -5849,6 +6016,10 @@ function filterSelectedWords() {
     }
 
     function cancelMatchmaking() {
+        matchHasConnected = false;
+        v21State.isSearchingMatch = false;
+        activeBroadcastRoom = null;
+        
         if (v21State.matchTimers) {
             try {
                 v21State.matchTimers.forEach(t => clearTimeout(t));
@@ -5923,6 +6094,9 @@ function filterSelectedWords() {
             document.getElementById("v21-match-overlay").style.display = "flex";
             const _e_v21_match_status = document.getElementById('v21-match-status'); if (_e_v21_match_status) _e_v21_match_status.innerText = "カスタム部屋を作成中...";
             
+            activeBroadcastRoom = `pw_custom_${roomIdInput}`;
+            v21State.role = 'host';
+            
             const targetId = `vocab_v21_custom_${roomIdInput}`;
             const p = new Peer(targetId, peerConfig);
             
@@ -5932,10 +6106,14 @@ function filterSelectedWords() {
                 const _e_v21_match_status = document.getElementById('v21-match-status'); if (_e_v21_match_status) _e_v21_match_status.innerText = `合言葉「${roomIdInput}」で対戦相手の入室を待機中...`;
                 
                 p.on('connection', (c) => {
-                    c.on('open', () => {
-                        v21Conn = c;
+                    v21Conn = c;
+                    if (c.open) {
                         setupConnectionHandlers();
-                    });
+                    } else {
+                        c.on('open', () => {
+                            setupConnectionHandlers();
+                        });
+                    }
                 });
             });
             
@@ -5968,6 +6146,19 @@ function filterSelectedWords() {
             document.getElementById("v21-match-overlay").style.display = "flex";
             const _e_v21_match_status = document.getElementById('v21-match-status'); if (_e_v21_match_status) _e_v21_match_status.innerText = "カスタム部屋に接続中...";
             
+            activeBroadcastRoom = `pw_custom_${roomIdInput}`;
+            v21State.role = 'guest';
+            
+            // Broadcast join request over local BroadcastChannel
+            if (v21BC) {
+                v21BC.postMessage({
+                    v21_match_signal: true,
+                    signalType: 'pw_join_request',
+                    roomId: activeBroadcastRoom,
+                    senderId: mySessionId
+                });
+            }
+            
             const targetId = `vocab_v21_custom_${roomIdInput}`;
             connectToPeer(targetId).then(result => {
                 if (result) {
@@ -5992,6 +6183,10 @@ function filterSelectedWords() {
     });
 
     function setupConnectionHandlers() {
+        if (matchHasConnected) return;
+        matchHasConnected = true;
+        v21State.isSearchingMatch = false;
+        
         const statusEl = document.getElementById("v21-match-status");
         if (statusEl) {
             statusEl.innerText = "🎉 マッチングしました！";
@@ -6005,17 +6200,25 @@ function filterSelectedWords() {
             cancelBtn.style.display = "none";
         }
         
-        v21Conn.on('data', (packet) => {
-            handleV21Packet(packet);
-        });
-        v21Conn.on('close', () => {
-            alert("対戦相手との接続が切れました。ロビーに戻ります。");
-            initBlackjackGame();
-        });
-        v21Conn.on('error', (err) => {
-            console.error("Connection error:", err);
-            alert("接続エラーが発生しました。\nエラー内容: " + (err.message || err.type || err));
-            initBlackjackGame();
+        if (v21Conn) {
+            v21Conn.on('data', (packet) => {
+                handleV21Packet(packet);
+            });
+            v21Conn.on('close', () => {
+                alert("対戦相手との接続が切れました。ロビーに戻ります。");
+                initBlackjackGame();
+            });
+            v21Conn.on('error', (err) => {
+                console.error("Connection error:", err);
+                alert("接続エラーが発生しました。\nエラー内容: " + (err.message || err.type || err));
+                initBlackjackGame();
+            });
+        }
+        
+        sendP2PPacket({
+            type: 'handshake',
+            name: studentNickname || (v21State.role === 'host' ? "ホスト" : "ゲスト"),
+            rating: player.rating || 1500
         });
         
         setTimeout(() => {
@@ -6025,25 +6228,12 @@ function filterSelectedWords() {
             
             showV21Panel("v21-setup-panel");
             
-            if (v21State.role === 'host') {
-                v21Conn.send({
-                    type: 'handshake',
-                    name: studentNickname || "ホスト",
-                    rating: player.rating || 1500
-                });
-                v21State.round = 1;
-                v21State.playerTotalScore = 0;
-                v21State.opponentTotalScore = 0;
-                v21State.roundHistory = [];
-                setupPvPRound();
-            } else {
-                v21State.round = 1;
-                v21State.playerTotalScore = 0;
-                v21State.opponentTotalScore = 0;
-                v21State.roundHistory = [];
-                setupPvPRound();
-            }
-        }, 1000);
+            v21State.round = 1;
+            v21State.playerTotalScore = 0;
+            v21State.opponentTotalScore = 0;
+            v21State.roundHistory = [];
+            setupPvPRound();
+        }, 800);
     }
 
     function handleV21Packet(packet) {
@@ -6299,31 +6489,10 @@ function filterSelectedWords() {
     }
 
     function selectAICards(words) {
-        let bestCombos = [];
-        let closeCombos = [];
-        function backtrack(index, currentCombo, currentSum) {
-            if (currentSum > 21) return;
-            if (currentSum >= 16 && currentSum <= 21) {
-                bestCombos.push([...currentCombo]);
-            }
-            if (currentSum < 16) {
-                closeCombos.push({ combo: [...currentCombo], sum: currentSum });
-            }
-            for (let i = index; i < words.length; i++) {
-                currentCombo.push(words[i]);
-                backtrack(i + 1, currentCombo, currentSum + words[i].en.length);
-                currentCombo.pop();
-            }
-        }
-        backtrack(0, [], 0);
-        
-        if (bestCombos.length > 0) {
-            return bestCombos[Math.floor(Math.random() * bestCombos.length)].map(w => w.id);
-        } else if (closeCombos.length > 0) {
-            closeCombos.sort((a, b) => b.sum - a.sum);
-            return closeCombos[0].combo.map(w => w.id);
-        }
-        return [];
+        if (!words || words.length === 0) return [];
+        // Simply pick 3 random cards for display representation
+        const shuffled = [...words].sort(() => Math.random() - 0.5);
+        return shuffled.slice(0, 3).map(w => w.id);
     }
 
     function revealV21PlayerCards() {
@@ -6420,61 +6589,36 @@ function filterSelectedWords() {
         const boxesGrid = document.getElementById("v21-spell-boxes-grid");
         boxesGrid.innerHTML = "";
         
-        const cleanLen = word.en.length;
-        for (let i = 0; i < cleanLen; i++) {
-            const char = word.en[i];
-            const box = document.createElement("div");
-            box.className = "v21-letter-box";
-            if (char === " ") {
-                box.innerText = " ";
-                box.classList.add("space-box");
-                box.style.background = "transparent";
-                box.style.border = "none";
-                box.style.color = "transparent";
-            } else if (char === "-") {
-                box.innerText = "-";
-                box.classList.add("hyphen-box");
-                box.classList.add("filled");
-            } else {
-                box.innerText = "";
-            }
-            boxesGrid.appendChild(box);
-        }
-        
         const textInput = document.getElementById("v21-spell-input-text");
         textInput.value = "";
-        textInput.maxLength = cleanLen;
+        textInput.removeAttribute("maxlength");
+        textInput.placeholder = `「${word.ja}」の英単語を入力 (同義語OK)`;
         textInput.focus();
         
-        textInput.oninput = () => {
-            const val = textInput.value.toUpperCase();
-            // Clean list of typed characters (ignoring spaces/hyphens to handle flexible inputs)
-            const cleanInputChars = val.replace(/[\s\-]/g, '').split('');
-            const boxes = boxesGrid.querySelectorAll(".v21-letter-box");
-            let cleanIdx = 0;
-            boxes.forEach((box, i) => {
-                const char = word.en[i];
-                if (char === " " || char === "-") {
-                    return; // keep space/hyphen rendering intact
+        const renderInputTiles = () => {
+            boxesGrid.innerHTML = "";
+            const typedVal = textInput.value.toUpperCase();
+            if (!typedVal) return;
+            for (let i = 0; i < typedVal.length; i++) {
+                const char = typedVal[i];
+                const box = document.createElement("div");
+                box.className = "v21-letter-box filled";
+                box.innerText = char;
+                if (char === " ") {
+                    box.style.background = "transparent";
+                    box.style.border = "none";
+                    box.style.color = "transparent";
                 }
-                if (cleanIdx < cleanInputChars.length) {
-                    box.innerText = cleanInputChars[cleanIdx];
-                    box.classList.add("filled");
-                    cleanIdx++;
-                } else {
-                    box.innerText = "";
-                    box.classList.remove("filled");
-                }
-            });
+                boxesGrid.appendChild(box);
+            }
         };
-        startSpellingWordTimer();
-    }
-
-    function startSpellingWordTimer() {
-        if (v21State.timerInterval) clearInterval(v21State.timerInterval);
-        v21State.timerVal = 15;
-        const _e_v21_spell_timer = document.getElementById('v21-spell-timer'); if (_e_v21_spell_timer) _e_v21_spell_timer.innerText = `⏱️ ${v21State.timerVal}s`;
         
+        textInput.oninput = renderInputTiles;
+        
+        v21State.timerVal = 15;
+        const _e_v21_spell_timer = document.getElementById('v21-spell-timer'); if (_e_v21_spell_timer) _e_v21_spell_timer.innerText = `⏱️ 15s`;
+        
+        if (v21State.timerInterval) clearInterval(v21State.timerInterval);
         v21State.timerInterval = setInterval(() => {
             v21State.timerVal--;
             const _e_v21_spell_timer = document.getElementById('v21-spell-timer'); if (_e_v21_spell_timer) _e_v21_spell_timer.innerText = `⏱️ ${v21State.timerVal}s`;
@@ -6490,14 +6634,19 @@ function filterSelectedWords() {
         
         const word = v21State.spellingQueue[v21State.spellingIndex];
         const inputVal = document.getElementById("v21-spell-input-text").value.trim().toLowerCase();
-        const correctVal = word.en.toLowerCase();
-        
         const inputValClean = inputVal.replace(/[\s\-]/g, '');
-        const correctValClean = correctVal.replace(/[\s\-]/g, '');
+        
+        const acceptedList = getAcceptedWordsForWord(word);
         
         let correct = false;
-        if (!isSkip && (inputVal === correctVal || inputValClean === correctValClean)) {
-            correct = true;
+        if (!isSkip && inputValClean.length > 0) {
+            correct = acceptedList.some(acc => {
+                const accClean = acc.toLowerCase().replace(/[\s\-]/g, '');
+                return inputVal === acc.toLowerCase() || inputValClean === accClean;
+            });
+        }
+        
+        if (correct) {
             v21State.spellingCorrectCount++;
             AudioSynth.play('win');
             addWordsToHistory([{ id: word.id, en: word.en, ja: word.ja }]);
@@ -6541,10 +6690,12 @@ function filterSelectedWords() {
         v21State.playerRoundSpellScore = v21State.spellingCorrectCount;
         
         if (v21State.mode === 'solo') {
-            let aiSpells = 0;
-            v21State.opponentSelectedIds.forEach(() => {
-                if (Math.random() < 0.8) aiSpells++;
-            });
+            const numCards = v21State.opponentSelectedIds.length || 3;
+            const accuracy = 0.75 + Math.random() * 0.25;
+            const minCorrect = Math.floor(numCards * 0.75);
+            let aiSpells = Math.round(numCards * accuracy);
+            aiSpells = Math.min(numCards, Math.max(minCorrect, aiSpells));
+            
             v21State.opponentRoundSpellScore = aiSpells;
             calculateV21SoloRoundOutcome();
         } else {
@@ -6577,7 +6728,9 @@ function filterSelectedWords() {
     function calculateV21SoloRoundOutcome() {
         const playerWord = v21State.playerRoundWordScore;
         const playerSpell = v21State.playerRoundSpellScore;
-        const dealerWord = calculateHandValue(v21State.opponentSelectedIds);
+        
+        // Dealer score is purely randomly selected from 16 to 21 (without referencing prompt words)
+        const dealerWord = Math.floor(Math.random() * 6) + 16;
         const dealerSpell = v21State.opponentRoundSpellScore;
         
         v21State.opponentRoundWordScore = dealerWord;

@@ -2288,29 +2288,7 @@
                     </div>
                 </div>
 
-                <!-- Password Match Input Modal -->
-                <div id="v21-pw-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.8); z-index: 99999; align-items: center; justify-content: center;">
-                    <div style="background: #1c1c1e; border: 2px solid var(--accent-gold); border-radius: 16px; padding: 24px; width: 90%; max-width: 380px; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,0.7); display: flex; flex-direction: column; gap: 16px;">
-                        <h3 style="color: var(--accent-gold); font-size: 1.2rem; margin: 0; font-weight: bold;">合言葉マッチ</h3>
-                        <p style="font-size: 0.8rem; color: var(--text-muted); margin: 0;">共通の合言葉を入力してください。</p>
-                        <input type="text" id="v21-pw-input" placeholder="合言葉 (例: target1200)" style="width: 100%; padding: 10px; background: rgba(0,0,0,0.5); border: 1.5px solid rgba(255,255,255,0.2); border-radius: 8px; color: #fff; text-align: center; font-size: 1rem; font-weight: bold; box-sizing: border-box; outline: none;">
-                        
-                        <div style="display: flex; gap: 10px; width: 100%;">
-                            <button class="btn btn-gold" id="btn-v21-pw-create" style="flex: 1; padding: 10px; font-size: 0.85rem; font-weight: bold;">部屋を作る</button>
-                            <button class="btn btn-secondary" id="btn-v21-pw-join" style="flex: 1; padding: 10px; font-size: 0.85rem; font-weight: bold;">部屋に入る</button>
-                        </div>
-                        <button class="btn btn-secondary" id="btn-v21-pw-cancel" style="padding: 10px; font-size: 0.85rem; width: 100%; margin-top: 4px;">閉じる</button>
-                    </div>
-                </div>
-
-                <!-- Matchmaking Loading Overlay (Full-screen Centered Modal) -->
-                <div id="v21-match-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.8); z-index: 99999; align-items: center; justify-content: center;">
-                    <div style="background: #1c1c1e; border: 2px solid var(--accent-gold); border-radius: 16px; padding: 32px; width: 90%; max-width: 380px; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,0.7); display: flex; flex-direction: column; align-items: center; gap: 16px;">
-                        <div id="v21-match-spinner" class="loading-spinner" style="width: 44px; height: 44px; border: 4px solid rgba(255,255,255,0.1); border-top-color: var(--accent-gold); border-radius: 50%; animation: spin 1s infinite linear;"></div>
-                        <div id="v21-match-status" style="font-size: 1.1rem; color: var(--text-main); font-weight: bold; font-family: 'Outfit', sans-serif;">接続中...</div>
-                        <button class="btn btn-secondary" id="btn-v21-cancel-match" style="padding: 10px 20px; font-size: 0.85rem; width: 100%;">キャンセル</button>
-                    </div>
-                </div>
+                
             </div>
 
             <!-- Common Scoreboard Container (moved dynamically) -->
@@ -2629,7 +2607,31 @@
 <!-- ============================================== -->
 <!-- GAME SCRIPT -->
 
-<script>
+<!-- Password Match Input Modal (Centered Viewport Overlay) -->
+    <div id="v21-pw-modal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.8); backdrop-filter: blur(4px); z-index: 999999; align-items: center; justify-content: center; margin: 0; padding: 0;">
+        <div style="background: #1c1c1e; border: 2px solid var(--accent-gold); border-radius: 16px; padding: 24px; width: 90%; max-width: 380px; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,0.7); display: flex; flex-direction: column; gap: 16px; margin: auto;">
+            <h3 style="color: var(--accent-gold); font-size: 1.2rem; margin: 0; font-weight: bold;">合言葉マッチ</h3>
+            <p style="font-size: 0.8rem; color: var(--text-muted); margin: 0;">共通の合言葉を入力してください。</p>
+            <input type="text" id="v21-pw-input" placeholder="合言葉 (例: target1200)" style="width: 100%; padding: 10px; background: rgba(0,0,0,0.5); border: 1.5px solid rgba(255,255,255,0.2); border-radius: 8px; color: #fff; text-align: center; font-size: 1rem; font-weight: bold; box-sizing: border-box; outline: none;">
+            
+            <div style="display: flex; gap: 10px; width: 100%;">
+                <button class="btn btn-gold" id="btn-v21-pw-create" style="flex: 1; padding: 10px; font-size: 0.85rem; font-weight: bold;">部屋を作る</button>
+                <button class="btn btn-secondary" id="btn-v21-pw-join" style="flex: 1; padding: 10px; font-size: 0.85rem; font-weight: bold;">部屋に入る</button>
+            </div>
+            <button class="btn btn-secondary" id="btn-v21-pw-cancel" style="padding: 8px; font-size: 0.8rem;">キャンセル</button>
+        </div>
+    </div>
+
+    <!-- Quick Match Matchmaking Overlay Modal (Centered Viewport Overlay) -->
+    <div id="v21-match-overlay" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.8); backdrop-filter: blur(4px); z-index: 999999; align-items: center; justify-content: center; margin: 0; padding: 0;">
+        <div style="background: #1c1c1e; border: 2px solid var(--accent-gold); border-radius: 16px; padding: 32px; width: 90%; max-width: 380px; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,0.7); display: flex; flex-direction: column; align-items: center; gap: 16px; margin: auto;">
+            <div id="v21-match-spinner" class="loading-spinner" style="width: 44px; height: 44px; border: 4px solid rgba(255,255,255,0.1); border-top-color: var(--accent-gold); border-radius: 50%; animation: spin 1s infinite linear;"></div>
+            <div id="v21-match-status" style="font-size: 1.1rem; color: var(--text-main); font-weight: bold; font-family: 'Outfit', sans-serif;">接続中...</div>
+            <button class="btn btn-secondary" id="btn-v21-cancel-match" style="padding: 10px 20px; font-size: 0.85rem; width: 100%;">キャンセル</button>
+        </div>
+    </div>
+
+    <script>
 // Web Audio Synthesizer for Casino SFX
     const AudioSynth = {
         ctx: null,
@@ -6206,7 +6208,7 @@ function filterSelectedWords() {
                         <div style="font-size: 0.64rem; color: var(--text-muted); margin-top: 4px;">文字数: ?</div>
                     </div>
                     <div class="v21-card-back">
-                        <div style="font-size: 0.94rem; font-weight: bold; color: var(--accent-gold);">${word.en}</div>
+                        <div style="font-size: 0.94rem; font-weight: bold; color: var(--accent-gold);">???</div>
                         <div style="font-size: 0.74rem; margin-top: 2px;">${word.ja}</div>
                         <div style="font-size: 0.7rem; color: #10b981; font-weight: bold; margin-top: 4px;">文字数: ${word.en.length}</div>
                     </div>
@@ -6338,7 +6340,7 @@ function filterSelectedWords() {
                     const cardBack = cardEl.querySelector(".v21-card-back");
                     if (cardBack) {
                         cardBack.innerHTML = `
-                            <div style="font-size: 0.94rem; font-weight: bold; color: var(--accent-gold);">${matchedObj.en}</div>
+                            <div style="font-size: 0.94rem; font-weight: bold; color: var(--accent-gold);">???</div>
                             <div style="font-size: 0.74rem; margin-top: 2px;">${word.ja}</div>
                             <div style="font-size: 0.7rem; color: #10b981; font-weight: bold; margin-top: 4px;">文字数: ${matchedObj.len}</div>
                         `;
@@ -6680,7 +6682,8 @@ function filterSelectedWords() {
     document.getElementById("btn-v21-panel-continue").addEventListener("click", () => {
         AudioSynth.play('click');
         
-        if (document.getElementById("btn-v21-panel-continue").innerText === "ロビーに戻る") {
+        const btnTxt = document.getElementById("btn-v21-panel-continue").innerText;
+        if (btnTxt === "対戦選択に戻る" || btnTxt === "ロビーに戻る" || btnTxt.includes("戻る")) {
             initBlackjackGame();
             return;
         }
@@ -6841,20 +6844,20 @@ function filterSelectedWords() {
             outcomeMsg += `【対戦結果】: <strong>${winnerName}</strong><br><br>`;
             outcomeMsg += `あなた合計: ${v21State.playerTotalScore} 点<br>`;
             outcomeMsg += `ディーラー合計: ${v21State.opponentTotalScore} 点<br><br>`;
-            outcomeMsg += `獲得チップ: <strong>+${ratingDiff}</strong> チップ`;
+            
             const _e_v21_panel_overall_standings = document.getElementById('v21-panel-overall-standings'); if (_e_v21_panel_overall_standings) _e_v21_panel_overall_standings.innerHTML = "ソロプレイが完了しました！";
         } else {
             outcomeMsg += `【対戦勝者】: <strong>${winnerName}</strong><br><br>`;
             outcomeMsg += `ホスト合計: ${v21State.playerTotalScore} 点<br>`;
             outcomeMsg += `ゲスト合計: ${v21State.opponentTotalScore} 点<br><br>`;
             outcomeMsg += `あなたのレート変動: <strong>${ratingDiff >= 0 ? "+" : ""}${ratingDiff}</strong> (現在のレート: ${player.rating})`;
-            const _e_v21_panel_overall_standings = document.getElementById('v21-panel-overall-standings'); if (_e_v21_panel_overall_standings) _e_v21_panel_overall_standings.innerHTML = "対戦が完了しました。チップ配当とレーティングが保存されました！";
+            const _e_v21_panel_overall_standings = document.getElementById('v21-panel-overall-standings'); if (_e_v21_panel_overall_standings) _e_v21_panel_overall_standings.innerHTML = "対戦が完了しました。レーティングが保存されました！";
         }
         
         const _e_v21_panel_result_details = document.getElementById('v21-panel-result-details'); if (_e_v21_panel_result_details) _e_v21_panel_result_details.innerHTML = outcomeMsg;
         
         const continueBtn = document.getElementById("btn-v21-panel-continue");
-        continueBtn.innerText = "ロビーに戻る";
+        continueBtn.innerText = "対戦選択に戻る";
         continueBtn.disabled = false;
         continueBtn.style.opacity = "1";
         
@@ -6910,5 +6913,5 @@ function filterSelectedWords() {
             </div>
         </div>
     </div>
-</body>
+    </body>
 </html>

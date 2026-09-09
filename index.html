@@ -5329,42 +5329,406 @@ function filterSelectedWords() {
         }
     };
 
-    // BroadcastChannel + PeerJS Hybrid Network Engine
+    const peerConfig = {
+        debug: 0,
+        config: {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'stun:stun.services.mozilla.com' }
+            ]
+        }
+    };
+
+    // Zero-Fail P2P & Matchmaking Hybrid Signal Engine
     const v21BC = ('BroadcastChannel' in window) ? new BroadcastChannel('vocab_casino_v21_p2p_channel') : null;
     let activeBroadcastRoom = null;
-    let mySessionId = 'p_' + Math.random().toString(36).substr(2, 9);
+    let mySessionId = 'p_' + Math.floor(Math.random() * 100000000);
     let matchHasConnected = false;
-    window.v21State = {
-        mode: 'solo', // 'solo' | 'quick' | 'custom'
-        role: 'host', // 'host' | 'guest'
-        opponentName: 'AIディーラー',
-        opponentRating: 1500,
-        round: 1,
-        maxRounds: 5,
-        currentChooser: 'player',
-        betStartId: 1,
-        betEndId: 100,
-        spellAddon: false,
-        words: [],
-        playerSelectedIds: [],
-        opponentSelectedCount: 0,
-        opponentSelectedIds: [],
-        playerLocked: false,
-        opponentLocked: false,
-        playerRoundWordScore: 0,
-        playerRoundSpellScore: 0,
-        opponentRoundWordScore: 0,
-        opponentRoundSpellScore: 0,
-        playerTotalScore: 0,
-        opponentTotalScore: 0,
-        roundHistory: [],
-        spellingQueue: [],
-        spellingIndex: 0,
-        spellingCorrectCount: 0,
-        timerVal: 30,
-        timerInterval: null,
-        currentBet: 100
-    };
+
+    function sendSignal(data) {
+        if (!data) return;
+        data.senderId = mySessionId;
+        if (v21BC) {
+            try { v21BC.postMessage(data); } catch(e) {}
+        }
+        try {
+            localStorage.setItem('v21_relay_signal', JSON.stringify(data));
+        } catch(e) {}
+    }
+
+    function sendP2PPacket(packet) {
+        if (v21Conn && v21Conn.open) {
+            try { v21Conn.send(packet); } catch(e) {}
+        }
+        if (activeBroadcastRoom) {
+            const payload = {
+                v21_game_packet: true,
+                roomId: activeBroadcastRoom,
+                senderRole: v21State.role,
+                senderId: mySessionId,
+                packet: packet,
+                ts: Date.now()
+            };
+            if (v21BC) {
+                try { v21BC.postMessage(payload); } catch(e) {}
+            }
+            try {
+                localStorage.setItem('v21_relay_game_packet', JSON.stringify(payload));
+            } catch(e) {}
+        }
+    }
+
+    function processIncomingSignal(data) {
+        if (!data || data.senderId === mySessionId) return;
+        
+        // Game Packet Sync
+        if (data.v21_game_packet && data.roomId === activeBroadcastRoom && data.senderRole !== v21State.role) {
+            handleV21Packet(data.packet);
+            return;
+        }
+        
+        // Matchmaking Signal Sync
+        if (data.v21_match_signal) {
+            handleMatchSignal(data);
+        }
+    }
+
+    if (v21BC) {
+        v21BC.onmessage = (e) => processIncomingSignal(e.data);
+    }
+    
+    window.addEventListener('storage', (e) => {
+        if (e.key === 'v21_relay_signal' && e.newValue) {
+            try { processIncomingSignal(JSON.parse(e.newValue)); } catch(err) {}
+        }
+        if (e.key === 'v21_relay_game_packet' && e.newValue) {
+            try { processIncomingSignal(JSON.parse(e.newValue)); } catch(err) {}
+        }
+    });
+
+    function handleMatchSignal(data) {
+        if (!data || data.senderId === mySessionId) return;
+        
+        // Quick match search
+        if (data.signalType === 'quick_search' && v21State.mode === 'quick' && v21State.role === 'host' && !matchHasConnected) {
+            activeBroadcastRoom = 'quick_room_' + mySessionId + '_' + data.senderId;
+            v21State.opponentName = data.name || "ゲスト";
+            v21State.opponentRating = data.rating || 1500;
+            
+            sendSignal({
+                v21_match_signal: true,
+                signalType: 'quick_accept',
+                targetSenderId: data.senderId,
+                roomId: activeBroadcastRoom,
+                hostName: studentNickname || "ホスト",
+                hostRating: player.rating || 1500
+            });
+            
+            setupConnectionHandlers();
+            return;
+        }
+        
+        if (data.signalType === 'quick_accept' && v21State.mode === 'quick' && v21State.role === 'guest' && !matchHasConnected) {
+            if (data.targetSenderId === mySessionId) {
+                activeBroadcastRoom = data.roomId;
+                v21State.opponentName = data.hostName || "ホスト";
+                v21State.opponentRating = data.hostRating || 1500;
+                setupConnectionHandlers();
+                return;
+            }
+        }
+        
+        // Custom Password match
+        if (data.signalType === 'pw_join_request' && v21State.mode === 'custom' && v21State.role === 'host' && activeBroadcastRoom === data.roomId && !matchHasConnected) {
+            v21State.opponentName = data.guestName || "ゲスト";
+            v21State.opponentRating = data.guestRating || 1500;
+            
+            sendSignal({
+                v21_match_signal: true,
+                signalType: 'pw_join_accept',
+                roomId: activeBroadcastRoom,
+                hostName: studentNickname || "ホスト",
+                hostRating: player.rating || 1500
+            });
+            
+            setupConnectionHandlers();
+            return;
+        }
+        
+        if (data.signalType === 'pw_join_accept' && v21State.mode === 'custom' && v21State.role === 'guest' && activeBroadcastRoom === data.roomId && !matchHasConnected) {
+            v21State.opponentName = data.hostName || "ホスト";
+            v21State.opponentRating = data.hostRating || 1500;
+            setupConnectionHandlers();
+            return;
+        }
+    }
+
+    function connectToPeer(targetId) {
+        return new Promise((resolve) => {
+            let hasResolved = false;
+            let tempPeer = null;
+            let timeoutId = null;
+            
+            const cleanupAndResolve = (result) => {
+                if (hasResolved) return;
+                hasResolved = true;
+                if (timeoutId) clearTimeout(timeoutId);
+                resolve(result);
+            };
+            
+            timeoutId = setTimeout(() => {
+                if (tempPeer) {
+                    try { tempPeer.destroy(); } catch(e) {}
+                }
+                cleanupAndResolve(null);
+            }, 3000);
+            
+            try {
+                tempPeer = new Peer(peerConfig);
+                tempPeer.on('open', () => {
+                    try {
+                        const conn = tempPeer.connect(targetId, { timeout: 2500 });
+                        const onOpen = () => cleanupAndResolve({ peer: tempPeer, conn });
+                        if (conn.open) onOpen();
+                        else conn.on('open', onOpen);
+                        conn.on('error', () => cleanupAndResolve(null));
+                    } catch(e) { cleanupAndResolve(null); }
+                });
+                tempPeer.on('error', () => cleanupAndResolve(null));
+            } catch(e) {
+                cleanupAndResolve(null);
+            }
+        });
+    }
+
+    function tryHostRoomPeerJS(tier) {
+        try {
+            const targetId = `vocab_v21_t${tier}_r1`;
+            const p = new Peer(targetId, peerConfig);
+            p.on('open', () => {
+                v21Peer = p;
+                p.on('connection', (c) => {
+                    v21Conn = c;
+                    setupConnectionHandlers();
+                });
+            });
+            p.on('error', () => {});
+        } catch(e) {}
+    }
+
+    function setupConnectionHandlers() {
+        if (matchHasConnected) return;
+        matchHasConnected = true;
+        
+        const statusEl = document.getElementById("v21-match-status");
+        if (statusEl) statusEl.innerText = "🎉 マッチングしました！";
+        
+        const spinnerEl = document.getElementById("v21-match-spinner");
+        if (spinnerEl) spinnerEl.style.display = "none";
+        
+        const cancelBtn = document.getElementById("btn-v21-cancel-match");
+        if (cancelBtn) cancelBtn.style.display = "none";
+        
+        if (v21Conn) {
+            v21Conn.on('data', (packet) => handleV21Packet(packet));
+            v21Conn.on('close', () => {
+                alert("対戦相手との接続が切れました。ロビーに戻ります。");
+                initBlackjackGame();
+            });
+            v21Conn.on('error', () => {});
+        }
+        
+        sendP2PPacket({
+            type: 'handshake',
+            name: studentNickname || (v21State.role === 'host' ? "ホスト" : "ゲスト"),
+            rating: player.rating || 1500
+        });
+        
+        setTimeout(() => {
+            document.getElementById("v21-match-overlay").style.display = "none";
+            if (spinnerEl) spinnerEl.style.display = "block";
+            if (cancelBtn) cancelBtn.style.display = "block";
+            
+            showV21Panel("v21-setup-panel");
+            
+            v21State.round = 1;
+            v21State.playerTotalScore = 0;
+            v21State.opponentTotalScore = 0;
+            v21State.roundHistory = [];
+            setupPvPRound();
+        }, 600);
+    }
+
+    function cancelMatchmaking() {
+        matchHasConnected = false;
+        activeBroadcastRoom = null;
+        
+        if (v21Conn) {
+            try { v21Conn.close(); } catch (e) {}
+            v21Conn = null;
+        }
+        if (v21Peer) {
+            try { v21Peer.destroy(); } catch (e) {}
+            v21Peer = null;
+        }
+        try {
+            document.getElementById("v21-match-overlay").style.display = "none";
+        } catch (e) {}
+    }
+
+    // Quick Match event listener
+    document.getElementById("btn-v21-quick").addEventListener("click", () => {
+        try {
+            AudioSynth.play('click');
+            cancelMatchmaking();
+            v21State.mode = 'quick';
+            
+            document.getElementById("v21-match-overlay").style.display = "flex";
+            const statusEl = document.getElementById('v21-match-status');
+            if (statusEl) statusEl.innerText = "対戦相手を探しています...";
+            
+            let foundHost = null;
+            try {
+                const rawHost = localStorage.getItem('v21_quick_waiting_host');
+                if (rawHost) {
+                    const hostData = JSON.parse(rawHost);
+                    if (Date.now() - hostData.ts < 12000 && hostData.hostSessionId !== mySessionId) {
+                        foundHost = hostData;
+                    }
+                }
+            } catch(e) {}
+            
+            if (foundHost) {
+                v21State.role = 'guest';
+                activeBroadcastRoom = foundHost.roomId;
+                v21State.opponentName = foundHost.hostName;
+                v21State.opponentRating = foundHost.hostRating;
+                
+                try { localStorage.removeItem('v21_quick_waiting_host'); } catch(e) {}
+                
+                sendSignal({
+                    v21_match_signal: true,
+                    signalType: 'quick_search',
+                    senderId: mySessionId,
+                    name: studentNickname || "ゲスト",
+                    rating: player.rating || 1500
+                });
+                
+                setupConnectionHandlers();
+            } else {
+                v21State.role = 'host';
+                activeBroadcastRoom = 'quick_room_' + mySessionId;
+                
+                try {
+                    localStorage.setItem('v21_quick_waiting_host', JSON.stringify({
+                        hostSessionId: mySessionId,
+                        roomId: activeBroadcastRoom,
+                        hostName: studentNickname || "ホスト",
+                        hostRating: player.rating || 1500,
+                        ts: Date.now()
+                    }));
+                } catch(e) {}
+                
+                sendSignal({
+                    v21_match_signal: true,
+                    signalType: 'quick_search',
+                    senderId: mySessionId,
+                    name: studentNickname || "ホスト",
+                    rating: player.rating || 1500
+                });
+                
+                const tier = getTierIndex(player.rating || 1500);
+                tryHostRoomPeerJS(tier);
+            }
+        } catch (e) {
+            console.error("Quick match err:", e);
+        }
+    });
+
+    // Custom Room Make event listener
+    document.getElementById("btn-v21-pw-create").addEventListener("click", () => {
+        try {
+            const roomIdInput = document.getElementById("v21-pw-input").value.trim();
+            if (!roomIdInput) {
+                alert("合言葉を入力してください。");
+                return;
+            }
+            AudioSynth.play('click');
+            document.getElementById("v21-pw-modal").style.display = "none";
+            cancelMatchmaking();
+            
+            v21State.mode = 'custom';
+            v21State.role = 'host';
+            activeBroadcastRoom = `pw_custom_${roomIdInput}`;
+            
+            document.getElementById("v21-match-overlay").style.display = "flex";
+            const statusEl = document.getElementById('v21-match-status');
+            if (statusEl) statusEl.innerText = `合言葉「${roomIdInput}」で対戦相手の入室を待機中...`;
+            
+            try {
+                localStorage.setItem(`v21_room_${roomIdInput}`, JSON.stringify({
+                    hostSessionId: mySessionId,
+                    hostName: studentNickname || "ホスト",
+                    hostRating: player.rating || 1500,
+                    ts: Date.now()
+                }));
+            } catch(e) {}
+            
+            try {
+                const targetId = `vocab_v21_custom_${roomIdInput}`;
+                const p = new Peer(targetId, peerConfig);
+                v21Peer = p;
+                p.on('connection', (c) => {
+                    v21Conn = c;
+                    setupConnectionHandlers();
+                });
+            } catch(e) {}
+        } catch (e) {
+            console.error("CreateRoom err:", e);
+        }
+    });
+
+    // Custom Room Join event listener
+    document.getElementById("btn-v21-pw-join").addEventListener("click", () => {
+        try {
+            const roomIdInput = document.getElementById("v21-pw-input").value.trim();
+            if (!roomIdInput) {
+                alert("合言葉を入力してください。");
+                return;
+            }
+            AudioSynth.play('click');
+            document.getElementById("v21-pw-modal").style.display = "none";
+            cancelMatchmaking();
+            
+            v21State.mode = 'custom';
+            v21State.role = 'guest';
+            activeBroadcastRoom = `pw_custom_${roomIdInput}`;
+            
+            document.getElementById("v21-match-overlay").style.display = "flex";
+            const statusEl = document.getElementById('v21-match-status');
+            if (statusEl) statusEl.innerText = "カスタム部屋に接続中...";
+            
+            sendSignal({
+                v21_match_signal: true,
+                signalType: 'pw_join_request',
+                roomId: activeBroadcastRoom,
+                guestName: studentNickname || "ゲスト",
+                guestRating: player.rating || 1500
+            });
+            
+            const targetId = `vocab_v21_custom_${roomIdInput}`;
+            connectToPeer(targetId).then(result => {
+                if (result) {
+                    v21Peer = result.peer;
+                    v21Conn = result.conn;
+                    setupConnectionHandlers();
+                }
+            }).catch(e => {});
+        } catch (e) {
+            console.error("JoinRoom err:", e);
+        }
+    });
 
     function showV21Panel(activePanelId) {
         const panels = [

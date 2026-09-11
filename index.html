@@ -5297,6 +5297,54 @@ function filterSelectedWords() {
     // =======================================================
     // V21 WORD BLACKJACK GAME SYSTEM
     // =======================================================
+    
+    // BroadcastChannel local multi-tab P2P fallback (enables seamless local testing across browser tabs!)
+    const localP2PChannel = (typeof BroadcastChannel !== 'undefined') ? new BroadcastChannel('v21_p2p_channel') : null;
+    
+    if (localP2PChannel) {
+        localP2PChannel.onmessage = (event) => {
+            const msg = event.data;
+            if (!msg || typeof msg !== 'object') return;
+            
+            if (msg.targetId && v21Peer && v21Peer.id === msg.targetId) {
+                // Local tab message directed to this host!
+                if (msg.type === 'local_connect_request') {
+                    // Simulate peer connection for local tabs
+                    v21State.isLocalTabConn = true;
+                    v21Conn = {
+                        open: true,
+                        send: (packet) => {
+                            localP2PChannel.postMessage({ targetId: msg.senderId, senderId: v21Peer.id, type: 'local_packet', packet });
+                        },
+                        close: () => {}
+                    };
+                    setupConnectionHandlers();
+                    localP2PChannel.postMessage({ targetId: msg.senderId, senderId: v21Peer.id, type: 'local_connect_ack', name: studentNickname || "ホスト", rating: player.rating || 1500 });
+                }
+            } else if (msg.targetId && v21State.localSenderId === msg.targetId) {
+                if (msg.type === 'local_connect_ack') {
+                    v21State.isLocalTabConn = true;
+                    v21Conn = {
+                        open: true,
+                        send: (packet) => {
+                            localP2PChannel.postMessage({ targetId: msg.senderId, senderId: v21State.localSenderId, type: 'local_packet', packet });
+                        },
+                        close: () => {}
+                    };
+                    v21State.role = 'guest';
+                    setupConnectionHandlers();
+                    v21Conn.send({
+                        type: 'handshake',
+                        name: studentNickname || "ゲスト",
+                        rating: player.rating || 1500
+                    });
+                } else if (msg.type === 'local_packet') {
+                    handleV21Packet(msg.packet);
+                }
+            }
+        };
+    }
+
     let v21Peer = null;
     let v21Conn = null;
     const peerConfig = {
@@ -5706,23 +5754,48 @@ function filterSelectedWords() {
         return 5;
     }
 
-    function connectToPeer(targetId) {
+    function connectToPeer(targetId, timeoutMs = 2500) {
         return new Promise((resolve) => {
-            const tempPeer = new Peer(peerConfig);
-            tempPeer.on('open', () => {
-                const conn = tempPeer.connect(targetId, { timeout: 5000 });
-                conn.on('open', () => {
-                    resolve({ peer: tempPeer, conn });
+            let hasResolved = false;
+            let tempPeer = null;
+            let timer = null;
+
+            const cleanupAndResolve = (result) => {
+                if (hasResolved) return;
+                hasResolved = true;
+                if (timer) clearTimeout(timer);
+                if (!result && tempPeer) {
+                    try { tempPeer.destroy(); } catch(e){}
+                }
+                resolve(result);
+            };
+
+            timer = setTimeout(() => {
+                cleanupAndResolve(null);
+            }, timeoutMs);
+
+            try {
+                tempPeer = new Peer(peerConfig);
+                tempPeer.on('open', () => {
+                    if (hasResolved) return;
+                    try {
+                        const conn = tempPeer.connect(targetId, { reliable: true, timeout: timeoutMs });
+                        conn.on('open', () => {
+                            cleanupAndResolve({ peer: tempPeer, conn });
+                        });
+                        conn.on('error', () => {
+                            cleanupAndResolve(null);
+                        });
+                    } catch(e) {
+                        cleanupAndResolve(null);
+                    }
                 });
-                conn.on('error', () => {
-                    tempPeer.destroy();
-                    resolve(null);
+                tempPeer.on('error', () => {
+                    cleanupAndResolve(null);
                 });
-            });
-            tempPeer.on('error', () => {
-                tempPeer.destroy();
-                resolve(null);
-            });
+            } catch(e) {
+                cleanupAndResolve(null);
+            }
         });
     }
 
@@ -5753,72 +5826,64 @@ function filterSelectedWords() {
     let matchmakingTimer = null;
     function startQuickMatchmaking() {
         cancelMatchmaking();
-        
-        // Show the matchmaking full-screen overlay modal
         document.getElementById("v21-match-overlay").style.display = "flex";
         
         const tier = getTierIndex(player.rating || 1500);
-        let phase = 0;
+        const statusEl = document.getElementById('v21-match-status');
+        if (statusEl) statusEl.innerText = "🔍 対戦相手を検索中 (ステップ1/2)...";
         
-        const _e_v21_match_status = document.getElementById('v21-match-status'); if (_e_v21_match_status) _e_v21_match_status.innerText = "対戦相手を探しています (フェーズ1)...";
-        let currentSlot = 1;
-        
-        function tryConnectNext() {
-            let targetTier = tier;
-            if (phase === 1) {
-                targetTier = (currentSlot % 2 === 0) ? Math.max(1, tier - 1) : Math.min(5, tier + 1);
-            }
+        let isSearching = true;
+        v21State.isSearching = true;
+
+        async function runMatchmakingProcess() {
+            // Check slots across tier and adjacent tiers
+            const candidateTiers = [tier, Math.max(1, tier - 1), Math.min(5, tier + 1)];
             
-            const targetId = `vocab_v21_t${targetTier}_r${currentSlot}`;
-            const _e_v21_match_status = document.getElementById('v21-match-status'); if (_e_v21_match_status) _e_v21_match_status.innerText = `接続をテスト中: ルーム ${targetTier}-${currentSlot}...`;
-            
-            connectToPeer(targetId).then(result => {
-                if (result) {
-                    v21Peer = result.peer;
-                    v21Conn = result.conn;
-                    v21State.role = 'guest';
-                    setupConnectionHandlers();
-                    v21Conn.send({
-                        type: 'handshake',
-                        name: studentNickname || "ゲスト",
-                        rating: player.rating || 1500
-                    });
-                } else {
-                    currentSlot++;
-                    if (currentSlot > 3) {
-                        currentSlot = 1;
+            for (let t of candidateTiers) {
+                for (let slot = 1; slot <= 3; slot++) {
+                    if (!v21State.isSearching) return;
+                    const targetId = `vocab_v21_t${t}_r${slot}`;
+                    if (statusEl) statusEl.innerText = `🔍 部屋を検索中 (レーティング区分 ${t}-${slot})...`;
+                    
+                    const res = await connectToPeer(targetId, 2000);
+                    if (res && v21State.isSearching) {
+                        v21Peer = res.peer;
+                        v21Conn = res.conn;
+                        v21State.role = 'guest';
+                        setupConnectionHandlers();
+                        v21Conn.send({
+                            type: 'handshake',
+                            name: studentNickname || "ゲスト",
+                            rating: player.rating || 1500
+                        });
+                        return;
                     }
-                    matchmakingTimer = setTimeout(tryConnectNext, 850);
                 }
-            });
+            }
+
+            // If no active host found, become the Host on an open slot
+            if (v21State.isSearching) {
+                if (statusEl) statusEl.innerText = "🏠 部屋を作成して対戦相手の参加を待っています...";
+                hostRoomAndWait(tier);
+            }
         }
-        
-        const phase1Timer = setTimeout(() => {
-            phase = 1;
-            const _e_v21_match_status = document.getElementById('v21-match-status'); if (_e_v21_match_status) _e_v21_match_status.innerText = "検索範囲を拡大中 (フェーズ2)...";
-        }, 2500);
-        
-        const phase2Timer = setTimeout(() => {
-            clearTimeout(matchmakingTimer);
-            const _e_v21_match_status = document.getElementById('v21-match-status'); if (_e_v21_match_status) _e_v21_match_status.innerText = "対戦相手を待機中 (ホスト登録中)...";
-            hostRoomAndWait(tier);
-        }, 5000);
-        
-        v21State.matchTimers = [phase1Timer, phase2Timer];
-        tryConnectNext();
+
+        runMatchmakingProcess();
     }
 
     function hostRoomAndWait(tier) {
         let slot = 1;
         
         function tryHost() {
+            if (!v21State.isSearching && v21State.mode !== 'custom') return;
             const targetId = `vocab_v21_t${tier}_r${slot}`;
             const p = new Peer(targetId, peerConfig);
             
             p.on('open', () => {
                 v21Peer = p;
                 v21State.role = 'host';
-                const _e_v21_match_status = document.getElementById('v21-match-status'); if (_e_v21_match_status) _e_v21_match_status.innerText = `対戦相手を待機中... (ルーム ${tier}-${slot})`;
+                const statusEl = document.getElementById('v21-match-status');
+                if (statusEl) statusEl.innerText = `⏱️ 対戦相手を待機中... (待機部屋: ${tier}-${slot})`;
                 
                 p.on('connection', (c) => {
                     c.on('open', () => {
@@ -5829,19 +5894,20 @@ function filterSelectedWords() {
             });
             
             p.on('error', (err) => {
+                p.destroy();
                 if (err.type === 'id-taken') {
-                    p.destroy();
                     slot++;
-                    if (slot <= 3) {
+                    if (slot <= 5) {
                         tryHost();
                     } else {
-                        const _e_v21_match_status = document.getElementById('v21-match-status'); if (_e_v21_match_status) _e_v21_match_status.innerText = "回線混雑中。再試行しています...";
+                        const statusEl = document.getElementById('v21-match-status');
+                        if (statusEl) statusEl.innerText = "回線混雑中。自動再試行中...";
                         setTimeout(() => hostRoomAndWait(tier), 2000);
                     }
                 } else {
-                    p.destroy();
-                    const _e_v21_match_status = document.getElementById('v21-match-status'); if (_e_v21_match_status) _e_v21_match_status.innerText = "回線エラー。再試行しています...";
-                    setTimeout(() => hostRoomAndWait(tier), 2000);
+                    const statusEl = document.getElementById('v21-match-status');
+                    if (statusEl) statusEl.innerText = "接続待機中...";
+                    setTimeout(() => tryHost(), 2000);
                 }
             });
         }
@@ -5849,32 +5915,25 @@ function filterSelectedWords() {
     }
 
     function cancelMatchmaking() {
+        v21State.isSearching = false;
         if (v21State.matchTimers) {
-            try {
-                v21State.matchTimers.forEach(t => clearTimeout(t));
-            } catch (e) { console.error(e); }
+            try { v21State.matchTimers.forEach(t => clearTimeout(t)); } catch (e) {}
         }
         if (matchmakingTimer) {
-            try {
-                clearTimeout(matchmakingTimer);
-            } catch (e) { console.error(e); }
+            try { clearTimeout(matchmakingTimer); } catch (e) {}
         }
         
         if (v21Conn) {
-            try {
-                v21Conn.close();
-            } catch (e) { console.error(e); }
+            try { v21Conn.close(); } catch (e) {}
             v21Conn = null;
         }
         if (v21Peer) {
-            try {
-                v21Peer.destroy();
-            } catch (e) { console.error(e); }
+            try { v21Peer.destroy(); } catch (e) {}
             v21Peer = null;
         }
         try {
             document.getElementById("v21-match-overlay").style.display = "none";
-        } catch (e) { console.error(e); }
+        } catch (e) {}
     }
 
     document.getElementById("btn-v21-quick").addEventListener("click", () => {
@@ -5918,10 +5977,12 @@ function filterSelectedWords() {
             }
             AudioSynth.play('click');
             document.getElementById("v21-pw-modal").style.display = "none";
-            cancelMatchmaking(); // Clean up previous peer connection before making new host
+            cancelMatchmaking();
             v21State.mode = 'custom';
+            v21State.isSearching = true;
             document.getElementById("v21-match-overlay").style.display = "flex";
-            const _e_v21_match_status = document.getElementById('v21-match-status'); if (_e_v21_match_status) _e_v21_match_status.innerText = "カスタム部屋を作成中...";
+            const statusEl = document.getElementById('v21-match-status');
+            if (statusEl) statusEl.innerText = `合言葉「${roomIdInput}」で部屋を作成中...`;
             
             const targetId = `vocab_v21_custom_${roomIdInput}`;
             const p = new Peer(targetId, peerConfig);
@@ -5929,7 +5990,7 @@ function filterSelectedWords() {
             p.on('open', () => {
                 v21Peer = p;
                 v21State.role = 'host';
-                const _e_v21_match_status = document.getElementById('v21-match-status'); if (_e_v21_match_status) _e_v21_match_status.innerText = `合言葉「${roomIdInput}」で対戦相手の入室を待機中...`;
+                if (statusEl) statusEl.innerText = `合言葉「${roomIdInput}」で対戦相手の入室を待機中...`;
                 
                 p.on('connection', (c) => {
                     c.on('open', () => {
@@ -5942,11 +6003,28 @@ function filterSelectedWords() {
             p.on('error', (err) => {
                 p.destroy();
                 if (err.type === 'id-taken') {
-                    alert("この合言葉の部屋は既に作成されています。");
+                    // Smart fallback: If room ID is taken, try joining it!
+                    if (statusEl) statusEl.innerText = `合言葉「${roomIdInput}」に接続中...`;
+                    connectToPeer(targetId, 3000).then(result => {
+                        if (result) {
+                            v21Peer = result.peer;
+                            v21Conn = result.conn;
+                            v21State.role = 'guest';
+                            setupConnectionHandlers();
+                            v21Conn.send({
+                                type: 'handshake',
+                                name: studentNickname || "ゲスト",
+                                rating: player.rating || 1500
+                            });
+                        } else {
+                            alert("この合言葉の部屋は満員か、対戦が開始されています。");
+                            cancelMatchmaking();
+                        }
+                    });
                 } else {
                     alert("エラーが発生しました。");
+                    cancelMatchmaking();
                 }
-                cancelMatchmaking();
             });
         } catch (e) {
             alert("エラーが発生しました (CreateRoom): " + e.message + "\n" + e.stack);
@@ -5963,13 +6041,15 @@ function filterSelectedWords() {
             }
             AudioSynth.play('click');
             document.getElementById("v21-pw-modal").style.display = "none";
-            cancelMatchmaking(); // Clean up previous connection
+            cancelMatchmaking();
             v21State.mode = 'custom';
+            v21State.isSearching = true;
             document.getElementById("v21-match-overlay").style.display = "flex";
-            const _e_v21_match_status = document.getElementById('v21-match-status'); if (_e_v21_match_status) _e_v21_match_status.innerText = "カスタム部屋に接続中...";
+            const statusEl = document.getElementById('v21-match-status');
+            if (statusEl) statusEl.innerText = `合言葉「${roomIdInput}」の部屋に接続中...`;
             
             const targetId = `vocab_v21_custom_${roomIdInput}`;
-            connectToPeer(targetId).then(result => {
+            connectToPeer(targetId, 3000).then(result => {
                 if (result) {
                     v21Peer = result.peer;
                     v21Conn = result.conn;
@@ -5982,7 +6062,7 @@ function filterSelectedWords() {
                         rating: player.rating || 1500
                     });
                 } else {
-                    alert("部屋が見つからないか、満員です。");
+                    alert("部屋が見つからないか、対戦相手が離脱しました。");
                     cancelMatchmaking();
                 }
             });
